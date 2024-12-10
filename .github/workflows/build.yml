@@ -1,0 +1,247 @@
+name: 🔧 编译
+
+on:
+  workflow_dispatch:
+    inputs:
+      owner:
+        description: 'ImmortalWrt 仓库的拥有者'
+        type: string
+        required: true
+        default: 'ImmortalWrt'
+      repo:
+        description: 'ImmortalWrt 仓库的名字'
+        type: string
+        required: true
+        default: 'immortalwrt'
+      branch:
+        description: 'ImmortalWrt 仓库的分支'
+        type: string
+        required: true
+        default: 'master'
+      multithreading:
+        description: '开启多线程编译'
+        type: boolean
+        default: true
+      ssh:
+        description: '启用 SSH 连接至环境'
+        type: boolean
+        default: false
+
+env:
+  # REPO_URL: https://github.com/immortalwrt/immortalwrt
+  # REPO_BRANCH: openwrt-21.02
+  FEEDS_CONF: feeds.conf.default
+  CONFIG_FILE: x86_64.config
+  FEEDS_SH: feeds.sh
+  DIY_SH: diy.sh
+  UPLOAD_BIN_DIR: false
+  UPLOAD_FIRMWARE: true
+  UPLOAD_RELEASE: true
+  TZ: Asia/Shanghai
+  FILE_NAME: x86_64
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+
+    steps:
+      - name: 精简前磁盘空间大小
+        run: |
+          echo "Before freeing up disk space"
+          echo "=============================================================================="
+          df -hT
+          echo "=============================================================================="
+
+      - name: "精简磁盘空间"
+        uses: "hugoalh/disk-space-optimizer-ghaction@v0.8.1"
+        with:
+          operate_sudo: "True"
+          general_include: ".+"
+          general_exclude: |-
+            ^GCC$
+            ^G\+\+$
+            Clang
+            LLVM
+          docker_include: ".+"
+          docker_prune: "True"
+          docker_clean: "True"
+          apt_prune: "True"
+          apt_clean: "True"
+          homebrew_prune: "True"
+          homebrew_clean: "True"
+          npm_prune: "True"
+          npm_clean: "True"
+          os_swap: "True"
+
+      - name: 释放磁盘空间
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 2048
+          swap-size-mb: 1
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+
+      - name: 精简后磁盘空间
+        run: |
+          echo "Free up disk space complete"
+          echo "=============================================================================="
+          df -hT
+          echo "=============================================================================="
+
+      - name: Clone 当前仓库
+        uses: actions/checkout@v4
+
+      - name: 初始化环境
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get -qq update
+          # sudo -E apt-get -qq install $(curl -fsSL https://build-scripts.immortalwrt.org/init_build_environment.sh)
+          sudo bash -c 'bash <(curl -s https://build-scripts.immortalwrt.org/init_build_environment.sh)'
+          sudo -E apt-get -qq autoremove --purge
+          sudo -E apt-get -qq clean
+          sudo rm -rf /etc/apt/sources.list.d/* /usr/local/lib/android /opt/ghc /usr/share/dotnet /usr/local/graalvm /usr/local/.ghcup \
+          /usr/local/share/powershell /usr/local/share/chromium /usr/local/lib/node_modules
+          sudo timedatectl set-timezone "$TZ"
+          sudo chown $USER:$GROUPS $GITHUB_WORKSPACE
+
+
+      - name: Clone WRT 源码
+        working-directory: ./
+        run: |
+          df -hT $PWD
+          git clone --depth=1 -b '${{inputs.branch}}' --single-branch --filter=blob:none https://github.com/${{inputs.owner}}/${{inputs.repo}} imwrt
+          cd imwrt
+          useVersionInfo=$(git show -s --date=short --format="Author: %an<br/>date: %cd<br/>commit: %s<br/>commit hash: %H")
+          echo "useVersionInfo=$useVersionInfo" >> $GITHUB_ENV
+          echo "DATE=$(date "+%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
+          echo "DATE1=$(date "+%Y-%m-%d")" >> $GITHUB_ENV
+
+      - name: 启用 Cache
+        uses: stupidloud/cachewrtbuild@main
+        with:
+          ccache: 'true'
+          prefix: ${{ github.workspace }}/imwrt
+          mixkey: 'x86-64'
+
+      - name: 载入自定义 feeds
+        run: |
+          [ -e $FEEDS_CONF ] && cp -rf $FEEDS_CONF imwrt/feeds.conf.default
+
+      - name: 执行 feeds 脚本 (如果有)
+        run: |
+          [ -e $FEEDS_SH ] && cp -rf $FEEDS_SH imwrt/
+          chmod +x $FEEDS_SH
+          cd imwrt
+          $GITHUB_WORKSPACE/$FEEDS_SH
+
+      - name: 更新 feeds
+        run: cd imwrt && ./scripts/feeds update -a
+
+      - name: 载入自定义配置
+        run: |
+          [ -e files ] && cp -rf files imwrt/files
+          [ -e $CONFIG_FILE ] && cp -rf $CONFIG_FILE imwrt/.config
+          [ -e $DIY_SH ] && cp -rf $DIY_SH imwrt/
+          chmod +x $DIY_SH
+          cd imwrt
+          $GITHUB_WORKSPACE/$DIY_SH
+
+      - name: 安装 feeds
+        run: cd imwrt && ./scripts/feeds install -a
+
+      - name: 使用 SSH 连接
+        uses: mxschmitt/action-tmate@v3
+        if: (github.event.inputs.ssh == 'true' && github.event.inputs.ssh  != 'false') || contains(github.event.action, 'ssh')
+
+      - name: 预下载 package
+        id: package
+        run: |
+          cd imwrt
+          make defconfig
+          make download -j8
+          find dl -size -1024c -exec ls -l {} \;
+          find dl -size -1024c -exec rm -f {} \;
+
+      - name: 开始编译 (多线程)
+        id: multi_compile
+        if: ${{inputs.multithreading == true}}
+        run: |
+          cd imwrt
+          echo -e "$(nproc) thread compile"
+          make -j$(nproc) V=s
+          echo "status=success" >> $GITHUB_OUTPUT
+          grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
+          [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
+          echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+
+      - name: 开始编译 (单线程)
+        id: single_compile
+        if: ${{inputs.multithreading == false}}
+        run: |
+          cd imwrt
+          echo -e "use single thread compile"
+          make -j$1 V=s
+          echo "status=success" >> $GITHUB_OUTPUT
+          grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
+          [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
+          echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+
+      - name: 上传 bin 目录
+        uses: actions/upload-artifact@v4
+        if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
+        with:
+          name: ImmortalWRT_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+          path: imwrt/bin
+
+      - name: 删除编译后 package 文件
+        id: organize
+        if: steps.compile.outputs.status == 'success' && env.UPLOAD_FIRMWARE == 'true' && !cancelled()
+        run: |
+          cd imwrt/bin/targets/*/*
+          rm -rf packages
+          echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: 上传固件
+        uses: actions/upload-artifact@v4
+        if: steps.organize.outputs.status == 'success' && !cancelled()
+        with:
+          name: ImmortalWRT_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+          path: ${{ env.FIRMWARE }}
+
+      - name: 上传固件至 release
+        id: release
+        if: steps.compile.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true' && !cancelled()
+        uses: ncipollo/release-action@v1
+        with:
+          name: R${{ env.DATE }} for ${{ env.FILE_NAME }}
+          allowUpdates: true
+          removeArtifacts: true
+          tag: ${{ env.FILE_NAME }}
+          commit: main
+          artifacts: ${{ env.FIRMWARE }}/*
+          body: |
+            - 默认IP：192.168.5.1 (可在 diy.sh 中修改) 默认密码：password
+            - 当前使用版本: ${{ env.useVersionInfo }}
+
+      - name: 删除 workflow
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          retain_days: 7
+          keep_minimum_runs: 10
+
+      - name: 删除旧版本
+        uses: dev-drprasad/delete-older-releases@v0.3.4
+        if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+        with:
+          keep_latest: 3
+          delete_tags: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
