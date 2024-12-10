@@ -110,6 +110,8 @@ jobs:
           /usr/local/share/powershell /usr/local/share/chromium /usr/local/lib/node_modules
           sudo timedatectl set-timezone "$TZ"
           sudo chown $USER:$GROUPS $GITHUB_WORKSPACE
+          if [ -f /var/lib/dpkg/locks ]; then sudo rm /var/lib/dpkg/locks/*; fi
+          sudo dpkg --configure -a
 
 
       - name: Clone WRT 源码
