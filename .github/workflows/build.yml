@@ -149,16 +149,23 @@ jobs:
           $GITHUB_WORKSPACE/$FEEDS_SH
 
       - name: 更新 feeds
-        run: cd imwrt && ./scripts/feeds update -a
+        run: |
+          cd imwrt && ./scripts/feeds update -a
+          if grep -q "kenzo" feeds.conf.default; then
+            rm -rf feeds/luci/applications/luci-app-mosdns
+            rm -rf feeds/packages/net/{alist,adguardhome,mosdns,xray*,v2ray*,v2ray*,sing*,smartdns}
+            rm -rf feeds/packages/utils/v2dat
+            rm -rf feeds/packages/lang/golang
+            git clone https://github.com/kenzok8/golang feeds/packages/lang/golang
+          fi
 
       - name: 载入自定义配置
         run: |
           [ -e files ] && cp -rf files imwrt/files
           [ -e $CONFIG_FILE ] && cp -rf $CONFIG_FILE imwrt/.config
-          [ -e $DIY_SH ] && cp -rf $DIY_SH imwrt/
+          [ -e $DIY_SH ] && cp -rf $DIY_SH imwrt/package/base-files/files/etc/uci-defaults/99-custom-settings
           chmod +x $DIY_SH
-          cd imwrt
-          $GITHUB_WORKSPACE/$DIY_SH
+          cd imwrt && make defconfig
 
       - name: 安装 feeds
         run: cd imwrt && ./scripts/feeds install -a

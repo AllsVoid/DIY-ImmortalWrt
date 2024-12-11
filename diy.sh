@@ -1,27 +1,40 @@
 #!/bin/bash
-# 用于 config 配置
-rm -rf feeds/luci/applications/luci-app-mosdns
-rm -rf feeds/packages/net/{alist,adguardhome,mosdns,xray*,v2ray*,v2ray*,sing*,smartdns}
-rm -rf feeds/packages/utils/v2dat
-rm -rf feeds/packages/lang/golang
-git clone https://github.com/kenzok8/golang feeds/packages/lang/golang
 
-# 修改默认配置
-CONFIG_GENERATE="package/base-files/files/bin/config_generate"
-sed -i 's/192.168.1.1/192.168.5.1/g' $CONFIG_GENERATE
+uci set interface.@interface[-1]='lan'
+uci set interface.lan=device='br-lan'
+uci set interface.lan=proto='static'
+uci set interface.lan=ipaddr='192.168.5.1'
+uci set interface.lan=netmask='255.255.255.0'
+uci set interface.lan=ip6assign='60'
+uci add_list interface.lan.dns='192.168.5.1'
 
-# 修改主机名
-sed -i "s/hostname='OpenWrt'/hostname='YKOP'/g" $CONFIG_GENERATE
+# 创建或修改 'wan' 接口
+# 根据自己的配置修改，或使用 files 大法
+uci set interface.@interface[-1]='wan'
+uci set interface.wan=device='eth0'
+# uci set interface.wan=proto='pppoe'
+uci set interface.wan=proto='DHCP'
+uci set interface.wan=ifname='eth0'
+# uci set interface.wan=username='admin'
+# uci set interface.wan=password='password'
+uci set interface.wan=ipv6='auto'
 
-# 修改网口配置
-NETWORK_CONFIG="target/linux/generic/base-files/etc/board.d/02_network"
-sed -i 's/ucidef_set_interface_lan "eth0"/ucidef_set_interface_lan "eth1 eth2 eth3"/g' $NETWORK_CONFIG
-sed -i 's/ucidef_set_interface_wan "eth1"/ucidef_set_interface_wan "eth0"/g' $NETWORK_CONFIG
+# 创建或修改 'wan6' 接口，不需要注释即可
+uci set interface.@interface[-1]='wan6'
+uci set interface.wan6=device='eth0'
+uci set interface.wan6=proto='dhcpv6'
+uci set interface.wan6=reqaddress='try'
+uci set interface.wan6=reqprefix='auto'
 
-# 预设 Wi-Fi 名称和密码
-WIFI_CONFIG="package/kernel/mac80211/files/lib/wifi/mac80211.sh"
-sed -i 's/set wireless.default_radio${devidx}.ssid=/# set wireless.default_radio${devidx}.ssid=/g' $WIFI_CONFIG
-echo '        set wireless.default_radio${devidx}.ssid="MyImWRT"' >> $WIFI_CONFIG
-echo '        set wireless.default_radio${devidx}.key="password0"' >> $WIFI_CONFIG
-echo '        set wireless.default_radio${devidx}.encryption="psk2"' >> $WIFI_CONFIG
-echo "Custom configurations applied."
+# 创建或修改 'device' 配置，根据自己的网口选择去填写
+uci set device.@device[-1]='br-lan'
+uci set device.br-lan=name='br-lan'
+uci set device.br-lan=type='bridge'
+uci add_list device.br-lan.ports='eth1'
+uci add_list device.br-lan.ports='eth2'
+uci add_list device.br-lan.ports='eth3'
+
+# 应用更改
+uci commit
+
+/etc/init.d/network restart
