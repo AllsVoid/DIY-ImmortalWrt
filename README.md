@@ -37,6 +37,8 @@
 
 
 ### 参考项目
+[Actions-ImmortalWrt](https://github.com/bling-yshs/Actions-ImmortalWrt)
+
 [ImmortalWRT-Actions](https://github.com/Gzxhwq/ImmortalWrt-Actions/tree/main)
 
 [Actions-OpenWRT](https://github.com/P3TERX/Actions-OpenWrt)
